@@ -1,0 +1,707 @@
+
+# First Bronze_Sales NOteBOok
+
+from pyspark.sql import *
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+import pandas as pd
+Sales_df = pd.read_excel("abfss://51d0f4f9-0295-4d8a-924f-edb8e8f51e2a@onelake.dfs.fabric.microsoft.com/1588973e-0230-456d-a79f-c7a31b61c3c2/Files/Current/Sales*.xlsx",sheet_name="Sales")
+
+SalesDF_1 =  spark.createDataFrame(Sales_df)
+
+display(SalesDF_1.head(10))
+
+Returns_df = pd.read_excel("abfss://51d0f4f9-0295-4d8a-924f-edb8e8f51e2a@onelake.dfs.fabric.microsoft.com/1588973e-0230-456d-a79f-c7a31b61c3c2/Files/Current/Sales*.xlsx",sheet_name="Returns")
+
+ReturnsDF_1 =  spark.createDataFrame(Returns_df)
+
+display(ReturnsDF_1.head(10))
+
+Final_dataframe= SalesDF_1.join(ReturnsDF_1,SalesDF_1.Order_ID==ReturnsDF_1.Order_ID,how="left")
+
+Final_dataframe= SalesDF_1.join(ReturnsDF_1,SalesDF_1.Order_ID==ReturnsDF_1.Order_ID,how="left").drop(ReturnsDF_1.Order_ID,ReturnsDF_1.Customer_Name,ReturnsDF_1.Sales_Amount)
+
+display(Final_dataframe.head(10))
+
+#Creating a time stamp
+Modied_DF = Final_dataframe.withColumns({"Order_Year":year("Order_Date"),\
+"Order_Month":month("Order_Date"),\
+"Created_TS":current_timestamp(),\
+"Modified_TS":current_timestamp(),
+})
+
+#Checking Schema 
+Modied_DF.printSchema()
+
+display(Modied_DF.head(10))
+
+#Creating a view and using to load data into the bronze table
+Modied_DF.createOrReplaceTempView("ViewSales")
+
+#Viewing view
+spark.sql("select * from ViewSales").show()
+
+#Displaying DF
+display(Final_dataframe.head(10))
+
+#Creating bronze table
+%%sql
+create table if not exists SibahleLakeHouseSales.Bronze_Sales(
+Order_ID string,
+Order_Date timestamp,
+Shipping_Date timestamp,
+Aging long,
+Ship_Mode string,
+Product_Category string,
+Product string,
+Sales long, Quantity long,
+Discount double, 
+Profit double,
+Shipping_Cost double,
+Order_priority string,
+Customer_ID string,
+Customer_Name string,
+Segment string,
+City string,
+State string,
+Country string,
+Region string,
+Return string,
+Order_Year int,
+Order_Month int,
+Created_TS timestamp,
+Modified_TS timestamp
+)
+using DELTA
+PARTITIONED by(Order_Year,Order_Month) 
+
+#Loaing the data into Bronze sales table from Sales View
+%%sql
+MERGE INTO SibahleLakeHouseSales.Bronze_Sales AS Bronze 
+USING ViewSales AS VSales ON 1 = 1  
+WHEN NOT MATCHED THEN 
+INSERT 
+(Order_ID, Order_Date, Shipping_Date, Aging, Ship_Mode, Product_Category, Product, Sales, Quantity, Discount, Profit, Shipping_Cost, Order_Priority, Customer_ID, Customer_Name, Segment, City, State, Country, Region, Return, Order_Year, Order_Month, Created_TS, Modified_TS) 
+VALUES 
+(VSales.Order_ID, VSales.Order_Date, VSales.Shipping_Date, VSales.Aging, VSales.Ship_Mode, VSales.Product_Category, VSales.Product, VSales.Sales, VSales.Quantity, VSales.Discount, VSales.Profit, VSales.Shipping_Cost, VSales.Order_Priority, VSales.Customer_ID, VSales.Customer_Name, VSales.Segment, VSales.City, VSales.State, VSales.Country, VSales.Region, VSales.Return, VSales.Order_Year, VSales.Order_Month, VSales.Created_TS, VSales.Modified_TS);
+
+#Viewing the data
+%%sql
+select * from SibahleLakeHouseSales.Bronze_Sales limit 10
+
+
+
+
+
+
+
+
+
+
+#NoteBook to create Customer Table
+
+from pyspark.sql import *
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from delta.tables import *
+
+#Creating table Gold_Customer
+%%sql
+create table if not exists SibahleLakeHouseSales.gold_Customer
+(
+    Customer_ID String,
+    Segment string,
+    Customer_Name string,
+    City string,
+    State string,
+    Country string,
+    Region string,
+    Created_TS timestamp,
+    Modified_TS timestamp 
+)
+using delta
+
+#Creating date for modidifed column to avoid null values at first run
+Max_Date = spark.sql("select coalesce(max('Modified_TS'),'1990-01-01') from SibahleLakeHouseSales.gold_Customer").first()[0]
+
+#Creating DF of Bronze_sales Tables 
+Bronze_DF = spark.read.table("SibahleLakeHouseSales.bronze_sales")
+
+#Creating Customer_DF from Bronze DF, taking from last modification date and dropping duplicates 
+Customer_DF = Bronze_DF.selectExpr("Customer_ID","Customer_Name","Segment","City","State","Country","Region")
+.where(col("Modified_TS")>Max_Date)
+.drop_duplicates()
+
+#Creating View 'ViewCustomer'
+Customer_DF.createOrReplaceTempView("ViewCustomer")
+
+#Loading Data from View into customer gold table
+%%sql
+merge into SibahleLakeHouseSales.gold_Customer as gc
+using ViewCustomer as vc
+on gc.Customer_ID = vc.Customer_ID
+when matched then 
+update SET
+gc.Customer_ID = vc.Customer_ID,
+gc.Segment = vc.Segment,
+gc.Customer_Name = vc.Customer_Name,
+gc.City = gc.City ,
+gc.State = gc.State ,
+gc.Country = gc.Country ,
+gc.Region = gc.Region,
+gc.Modified_TS = current_timestamp()
+when not matched then 
+insert(
+ gc.Customer_ID,
+ gc.Segment,
+ gc.Customer_Name,
+ gc.City,
+ gc.State,
+ gc.Country,
+ gc.Region,
+ gc.Created_TS,
+ gc.Modified_TS)
+values(
+ vc.Customer_ID,
+ vc.Segment,
+ vc.Customer_Name,
+ vc.City,
+ vc.State,
+ vc.Country,
+ vc.Region,
+ CURRENT_TIMESTAMP(),
+ CURRENT_TIMESTAMP())
+
+#Viewing data
+%%sql
+select * from gold_Customer
+
+
+
+
+
+
+
+
+#NoteBook to create Product Table
+from pyspark.sql import *
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from delta.tables import *
+
+#Creating table Gold_product
+%%sql
+create table if not exists SibahleLakeHouseSales.gold_Product(
+    Product_ID long,
+    Product_category string,
+    Product string,
+    Created_TS timestamp,
+    Modified_TS timestamp)
+using delta
+
+Max_Date = spark.sql("select coalesce(max('Modified_TS'),'1990-01-01') from SibahleLakeHouseSales.gold_Product").first()[0]
+
+#Creating produdct df from bronze_sales tables, disticnct column are selecetd
+#from bronze_sales atble to be included in tables, only created above selexted modification date are included
+bronze_DF = spark.sql("""
+select distinct Product_Category, Product from SibahleLakeHouseSales.bronze_sales 
+where Modified_TS>'{}'""".format(Max_Date))
+
+#Creating column Product_ID
+Max_Product_id = spark.sql("select coalesce(max('Product_ID'),0) from SibahleLakeHouseSales.gold_Product").first()[0]
+final_bronze_DF = bronze_DF.withColumn("Product_ID",monotonically_increasing_id()+Max_Product_id+1)
+
+#Creating View
+final_bronze_DF.createOrReplaceTempView("ProductView")
+
+%%sql
+select * from ProductView limit 10
+
+#loading from view into gold_Product table
+%%sql 
+merge into SibahleLakeHouseSales.gold_Product as gp
+using ProductView as pv
+on gp.Product = pv.Product and gp.Product_Category= pv.Product_Category
+when matched then 
+update SET
+gp.Modified_TS = CURRENT_TIMESTAMP()
+when not matched then 
+insert(
+gp.Product_ID, 
+gp.Product_category,
+gp.Product,
+gp.Created_TS ,
+gp.Modified_TS 
+)
+values (
+pv.Product_ID,
+pv.Product_category,
+pv.Product, 
+CURRENT_TIMESTAMP(),
+CURRENT_TIMESTAMP
+)
+
+%%sql
+ select * from gold_Product
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Creating Order_Return_Notebook_Gold
+
+from pyspark.sql import *
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+
+
+%%sql
+--Creating Order return table
+create table if not exists SibahleLakeHouseSales.Gold_OrderReturn (
+OrderID string,
+Return string,
+Order_Year int,
+Order_Month int,
+Created_TS timestamp,
+Modified_TS timestamp)
+using DELTA
+partitioned by(Order_Year,Order_Month)
+
+#Creating latest modification date and populating it by 1990-01-01 to avoid null on the first run
+Max_Date = spark.sql("select COALESCE(max('Modified_TS'),'1990-01-01') from SibahleLakeHouseSales.Gold_OrderReturn").first()[0]
+
+#Creating spark dataframe  from sql statement from results after last modification date
+Returns_DF = spark.sql("""
+select Order_ID ,Return ,Order_Year ,Order_Month ,Created_TS ,Modified_TS from SibahleLakeHouseSales.Bronze_Sales
+where Modified_TS > '{}'""".format(Max_Date))
+
+#viewing df
+Returns_DF.show()
+
+#--CReating view
+Returns_DF.createOrReplaceTempView("Returns_DF_View")
+
+%%sql
+insert into SibahleLakeHouseSales.Gold_OrderReturn 
+select * from Returns_DF_View
+
+#Viewing DF
+%%sql 
+select * from Gold_OrderReturn limit 10
+
+
+
+
+
+
+
+
+
+
+
+#Creating Order_Priority_Notebook_Gold
+
+from pyspark.sql import *
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from delta.tables import *
+
+#Creating ORder_Priority_Table
+DeltaTable.createIfNotExists(spark)\
+ .tableName("Gold_OrderPriority")\
+ .addColumn("Orderpriority_ID",LongType())\
+ .addColumn("Order_Priority",StringType())\
+ .addColumn("Created_TS",TimestampType())\
+ .addColumn("Modified_TS",TimestampType())\
+ .execute()
+
+#Creating Order-Priority DF
+Order_Priority_DF = spark.read.table("SibahleLakeHouseSales.Gold_OrderPriority")
+
+#Creating most recent date
+Max_date = Order_Priority_DF.selectExpr("coalesce(max(Modified_TS),'1990-01-01')").first()[0]
+
+#Creating?Loading data from main DF 'bronze_sale' into df
+Bronze_sales_DF = spark.read.table("SibahleLakeHouseSales.bronze_sales")
+
+#show first 5
+Bronze_sales_DF.show(5)
+
+#selecting distinct column 0rder_priority values from bronze_sales
+Bronze_sales_DF.select("Order_Priority").drop_duplicates().show()
+
+Creating modified Order_priority DF
+Order_Priority_DF_Modified = Bronze_sales_DF.select("Order_Priority").where(col("Modified_TS")>Max_date).drop_duplicates()
+
+#Addign increamentatal column Max_Orderpriority_ID column for every priority
+Max_Orderpriority_ID = Order_Priority_DF.selectExpr("coalesce(max(Orderpriority_ID),0)").first()[0]
+Final_Orderpriority_DF = Bronze_sales_Order_Priority_DF_Modified.withColumn("Orderpriority_ID",Max_Orderpriority_ID+monotonically_increasing_id()+1)
+
+#We need to inject the data into the orders Priority table
+DF_Gold_Delta = DeltaTable.forPath(spark,"Tables/gold_orderpriority")
+Bronze_Orderpriority_Table = Final_Orderpriority_DF
+w
+#A condition is created to only load data only when the conditions are met
+DF_Gold_Delta.alias("gold").merge( 
+    Bronze_Orderpriority_Table.alias("bronze"), 
+    "gold.Order_Priority == bronze.Order_Priority" 
+).whenMatchedUpdate( 
+    set={"gold.Modified_TS": current_timestamp()} 
+).whenNotMatchedInsert( 
+    values={ 
+        "gold.Orderpriority_ID": "bronze.Orderpriority_ID", 
+        "gold.Order_Priority": "bronze.Order_Priority", 
+        "gold.Created_TS": current_timestamp(), 
+        "gold.Modified_TS": current_timestamp() } ).execute()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Creating Date_Notebook_Gold
+%%sql
+create table if not exists SibahleLakeHouseSales.gold_Date(
+BusinessDate Date,
+Business_Year int,
+Business_Month int,
+Business_Quarter int,
+Business_Week int 
+)
+using DELTA
+PARTITIONED by (Business_Year)
+
+#Creating a start and end date
+Start_date = '2015-01-01'
+End_date = '2030-12-31'
+date_diff = spark.sql("select date_diff('{}','{}')".format(End_date,Start_date)).first()[0]
+
+##Genrrate a range of numbers 
+ID_Date = spark.range(0,date_diff)
+
+#CReating a new column BusinessDate based on clumn ID_date
+Date_data = ID_Date.selectExpr("date_add('{}',cast(id as int)) as BusinessDate".format(Start_date))
+
+#Creating View DateView
+Date_data.createOrReplaceTempView("DateView")
+
+#we now we generate year,month, quarter columns using column BusinessDate
+%%sql
+insert into SibahleLakeHouseSales.gold_Date
+select* ,
+year(BusinessDate) as Business_Year,
+Month(BusinessDate) as Business_Month,
+Quarter(BusinessDate) as Business_Quarter,
+Weekday(BusinessDate) as Business_Weekday
+from DateView
+
+
+
+
+
+
+
+
+
+
+
+
+#Creating Ship Mode notebook
+
+%%sql
+--Creating ship mode table
+create table if not exists SibahleLakeHouseSales.Gold_Shipmode
+(
+Shipmode_ID long,
+Ship_Mode string,
+Created_TS timestamp,
+Modified_TS timestamp
+)
+
+#Creating MAx date
+Max_Date = spark.sql("select coalesce(max('Modified_TS'),'1990-01-01') from SibahleLakeHouseSales.gold_shipmode").first()[0]
+
+#returning distinct values of column shipmode in table sales_bronzze
+ship_mode_bronze_df = spark.sql("select distinct Ship_Mode from SibahleLakeHouseSales.bronze_sales 
+where Modified_TS>'{}'".format(Max_Date))
+
+
+Max_ID = spark.sql("select coalesce(max(Shipmode_ID),0) from SibahleLakeHouseSales.gold_shipmode").first()[0]
+
+#Creating primary key column 'Max_ID'
+from pyspark.sql.functions import monotonically_increasing_id
+Final_ship_mode_bronze_df = ship_mode_bronze_df.withColumn("Ship_ID",monotonically_increasing_id()+Max_ID+1)
+
+#Viewing the dataframe
+Final_ship_mode_bronze_df.show()
+
+#Creating view 'shipmodeview'
+Final_ship_mode_bronze_df.createTempView("shipmodeview")
+
+%%sql
+--Now we use the merge fucntion to insert the data into the gold table
+merge into SibahleLakeHouseSales.gold_shipmode as gs
+using shipmodeview 
+on gs.Ship_Mode = shipmodeview.Ship_Mode
+when matched then
+update set
+Modified_TS = current_timestamp()
+
+when not matched then
+INSERT(
+gs.Shipmode_ID ,
+gs.Ship_Mode,
+gs.Created_TS ,
+gs.Modified_TS 
+)
+VALUES(
+    shipmodeview.Ship_ID, 
+    shipmodeview.Ship_Mode,
+    current_timestamp(),
+    current_timestamp()
+)
+
+%%sql
+select * from gold_shipmode
+
+
+
+
+
+
+
+
+
+#Creating Fact Sales Notebook
+
+%%sql
+create table if not exists SibahleLakeHouseSales.Gold_fact_Sales(
+Order_ID string,
+Price float,
+Quantity float,
+Sales float,
+Discount double, 
+Profit double,
+Shipping_Cost double,
+Order_Date timestamp,
+Shipping_Date timestamp,
+Product_ID long,
+OrderPriority string,
+ShipMode_ID long,
+Customer_ID string,
+Order_Year int,
+Order_Month int,
+Created_TS timestamp,
+Modified_TS timestamp
+)
+using DELTA
+PARTITIONED by(Order_Year,Order_Month) 
+
+
+#Impplement incremental logic to oull the data from sources 
+Max_Date = spark.sql("select coalesce(max('Modified_TS'),'1990-01-01') from SibahleLakeHouseSales.Gold_fact_Sales").first()[0]
+
+#Creating bronze DF frm bronze sales table and joining the newly formed tables into the DF
+bronze_DF = spark.sql("""
+select 
+bronze_sales.Order_ID,
+bronze_sales.Sales as Price, 
+bronze_sales.Quantity, 
+bronze_sales.Sales * bronze_sales.Quantity as Sales, 
+bronze_sales.Discount,
+bronze_sales.Profit ,
+bronze_sales.Shipping_Cost,
+bronze_sales.Order_Date,
+bronze_sales.Shipping_Date,
+
+gold_product.Product_ID ,
+gold_orderpriority.Order_Priority,
+gold_shipmode.ShipMode_ID,
+bronze_sales.Customer_ID,
+Year(Order_Date) as Order_Year,
+Month(Order_Date) as Order_Month
+from SibahleLakeHouseSales.bronze_sales
+
+inner join SibahleLakeHouseSales.gold_product 
+on bronze_sales.Product = gold_product.Product and bronze_sales.Product_Category = gold_product.Product_category
+
+
+inner join SibahleLakeHouseSales.gold_shipmode 
+on bronze_sales.Ship_Mode = gold_shipmode.Ship_Mode
+inner join SibahleLakeHouseSales.gold_orderpriority 
+on bronze_sales.Order_Priority=gold_orderpriority.Order_Priority
+""")
+
+#Shoow DF
+bronze_DF.show()
+
+#creating view
+bronze_DF.createOrReplaceTempView("FSTView")
+
+#viewing table
+%%sql
+select * from FSTView
+limit 10
+
+
+#loadding data from view into Gold_fact_Sales 
+%%sql
+merge into SibahleLakeHouseSales.Gold_fact_Sales as fst
+using FSTView as fsv 
+on fst.Order_Year = fsv.Order_Year
+and fst.Order_Month = fsv.Order_Month
+and fst.Order_ID = fsv.Order_ID
+
+when matched then   
+update set 
+fst.Sales = fsv.Sales,
+fst.Price = fsv.Price,
+fst.Quantity = fsv.Quantity,
+fst.Discount = fsv.Discount,
+fst.Profit = fsv.Profit,
+fst.Shipping_Cost = fsv.Shipping_Cost,
+fst.Order_Date = fsv.Order_Date,
+fst.Shipping_Date = fsv.Shipping_Date,
+fst.Product_ID = fsv.Product_ID,
+fst.OrderPriority = fsv.Order_Priority,
+fst.ShipMode_ID = fsv.ShipMode_ID,
+fst.Customer_ID = fsv.Customer_ID,
+fst.Modified_TS = CURRENT_TIMESTAMP()
+
+when not matched THEN
+INSERT
+(
+fst.Order_ID,
+fst.Sales,
+fst.Price,
+fst.Quantity,
+fst.Discount,
+fst.Profit,
+fst.Shipping_Cost,
+fst.Order_Date,
+fst.Shipping_Date,
+fst.Product_ID,
+fst.OrderPriority,
+fst.ShipMode_ID,
+fst.Customer_ID,
+fst.Order_Year,
+fst.Order_Month,
+fst.Created_TS,
+fst.Modified_TS
+)
+VALUES
+(
+fsv.Order_ID,
+fsv.Sales,
+fsv.Price,
+fsv.Quantity,
+fsv.Discount,
+fsv.Profit,
+fsv.Shipping_Cost,
+fsv.Order_Date,
+fsv.Shipping_Date,
+fsv.Product_ID,
+fsv.Order_Priority,
+fsv.ShipMode_ID,
+fsv.Customer_ID,
+fsv.Order_Year,
+fsv.Order_Month,
+CURRENT_TIMESTAMP(),
+CURRENT_TIMESTAMP()
+)
+#Viewing table
+%%sql
+select * from Gold_fact_Sales
+limit 10
+
+
+
+
+
+
+
+
+
+
+
+#Mounting Notebook
+# This notebooks serves to mount the data from  the files for to the archive folder 
+# we have an API to mount
+from notebookutils import mssparkutils
+
+mssparkutils.fs.help()
+
+#MOunting Lakehouse to this Files point 
+mssparkutils.fs.mount("abfss://51d0f4f9-0295-4d8a-924f-edb8e8f51e2a@onelake.dfs.fabric.microsoft.com/1588973e-0230-456d-a79f-c7a31b61c3c2/Files","/Files")
+
+
+#getting 'Files' path
+mssparkutils.fs.getMountPath("/Files")
+
+#Moving filed from current to archive but before moving we need to check if there are anything in the files
+check_Files= mssparkutils.fs.ls(f"file://{mssparkutils.fs.getMountPath('/Files')}/Current/")
+
+# Construct the destination path 
+# Move the file to the Archive directory 
+
+for file in check_Files: 
+ if file.path: 
+
+  destination_path = f"file://{mssparkutils.fs.getMountPath('/Files')}/Archive/{file.name}" 
+
+mssparkutils.fs.mv(file.path, destination_path)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Calling Notebook
+
+mssparkutils.fs.mount("abfss://51d0f4f9-0295-4d8a-924f-edb8e8f51e2a@onelake.dfs.fabric.microsoft.com/1588973e-0230-456d-a79f-c7a31b61c3c2/Files","/Files")
+
+mssparkutils.fs.getMountPath("/Files")
+#Below is the mount path
+
+#WE will create a variable and check if the files exist in the file or not if yes than we will run the notebook
+check_files = mssparkutils.fs.ls(f"file://{mssparkutils.fs.getMountPath('/Files')}/Current/")
+
+#if check files is not null then we will run out note book and then we are running the notbooks 
+if check_files:
+    mssparkutils.notebook.run("Bronze_sale Notebook")
+    mssparkutils.notebook.run("Date_ Notebook Gold")
+    mssparkutils.notebook.run("Customer_Notebook_Gold")
+    mssparkutils.notebook.run("Fact_Sales_Tables")
+    mssparkutils.notebook.run("Order_Notebook_Gold")
+    mssparkutils.notebook.run("Order_Priority_Notebook_Gold")
+    mssparkutils.notebook.run("Product_ Notebook Gold")
+    mssparkutils.notebook.run("ShipMode_Notebook_Gold")
+    mssparkutils.notebook.run("Mounting Notebook To Archive")
