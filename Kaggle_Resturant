@@ -1,1 +1,29 @@
+# importing kaggle library 
+!pip install kaggle
 
+#from kaggle.api.kaggle_api_extended import KaggleApi
+
+import os 
+from kaggle.api.kaggle_api_extended import KaggleApi 
+# Change to the directory where you want to save the dataset 
+os.chdir('/lakehouse/default/Files') 
+
+# Set Kaggle API credentials 
+os.environ['KAGGLE_USERNAME'] = 'sibahlehashe' 
+os.environ['KAGGLE_KEY'] = 'cfa73cdfdcd56065e4f0d2f8a295cedb' 
+# Authenticate with Kaggle API 
+api = KaggleApi() 
+api.authenticate() 
+# Download the dataset 
+api.dataset_download_file(dataset='sibahlehashe/kaggle', file_name='Restaurant-revenue(1).csv', path='/lakehouse/default/Files')
+
+
+#identify path
+path = "abfss://bdf9608b-9ebc-4742-ba14-b9eff415e693@onelake.dfs.fabric.microsoft.com/75df1207-415d-4262-b704-d40a682f70e4/Files/Restaurant_revenue (1).csv" 
+
+
+#creating DF
+df = spark.read.csv(path, header=True, inferSchema=True)
+
+#creating dimension table
+Dimension_df = df.select('Cuisine_Type')
