@@ -1,4 +1,4 @@
-
+1
 # First Bronze_Sales NOteBOok
 
 from pyspark.sql import *
