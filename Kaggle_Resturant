@@ -17,6 +17,16 @@ api.authenticate()
 # Download the dataset 
 api.dataset_download_file(dataset='sibahlehashe/kaggle', file_name='Restaurant-revenue(1).csv', path='/lakehouse/default/Files')
 
+or
+import os 
+os.chdir('/lakehouse/default/Files') 
+os.environ['KAGGLE_USERNAME'] = 'olacharles' 
+os.environ['KAGGLE_KEY'] = 'e500dc327936878e4727f156b0840f24' 
+from kaggle.api.kaggle_api_extended import KaggleApi 
+api = KaggleApi() 
+api.authenticate() 
+api.dataset_download_file('mrsimple07/restaurants-revenue-prediction', 'Restaurant_revenue(1).csv')
+
 
 #identify path
 path = "abfss://bdf9608b-9ebc-4742-ba14-b9eff415e693@onelake.dfs.fabric.microsoft.com/75df1207-415d-4262-b704-d40a682f70e4/Files/Restaurant_revenue (1).csv" 
